@@ -3,16 +3,18 @@ import io
 import os
 import re
 import json
+from json.decoder import JSONDecodeError
 from pathlib import Path
+from IPython.core.interactiveshell import InteractiveShell
 import sqlite3
 import pandas as pd
 import openai
 from openai.error import InvalidRequestError
 import tiktoken
-from tenacity import retry, retry_if_not_exception_type, wait_fixed
+from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, wait_fixed
 
 class WSDatabase:
-    data_path = Path("../data/world_stats.sqlite3")
+    data_path = Path(__file__).parent.joinpath("../data/world_stats.sqlite3")
     schema = [
         {
             "name": "country",
@@ -51,6 +53,16 @@ class WSDatabase:
         schema_csv = "table: world_stats\ncolumns:\n" + schema_csv
         return schema_csv
     
+    def query(self, query):
+        """Function to query SQLite database with a provided SQL query."""
+        cursor = self.conn.cursor()
+        cursor.execute(query)
+        results = cursor.fetchall()
+        print(results)
+        cols = [col[0] for col in cursor.description]
+        results_df = pd.DataFrame(results, columns=cols)
+        return results_df
+
     def ask_database(self, query):
         """Function to query SQLite database with a provided SQL query."""
         try:
@@ -160,6 +172,48 @@ class ChatEngine:
                     },
                     "required": ["query"]
                 },
+            }, {
+                "name": "exec_python",
+                "description": "Use this function to execute Python code. It will return the result as json.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "description": """
+                                Python code to execute.
+                                Notes:
+                                - The following code has been executed before your code:
+                                    ```Python
+                                    import pandas as pd
+                                    import matplotlib.pyplot as plt
+                                    import seaborn as sns
+                                    import sys
+                                    sys.path.append('../')
+                                    from utils import WSDatabase
+                                    ```
+                                - You can use WSDatabase to access the database as following:
+                                    ```Python
+                                    with WSDatabase() as db:
+                                        result = db.query("SELECT * FROM world_stats WHERE country = 'Japan'") # result is a DataFrame of Pandas.
+                                    ```
+                                - Do not return json-unserializable objects such as Pandas DataFrame.
+                            """,
+                        }
+                    }
+                }
+            }, {
+                "name": "post_image",
+                "description": "Use this function to post an image.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "The filename of the image to post."
+                        }
+                    }
+                }
             }
         ]
 
@@ -179,7 +233,7 @@ class ChatEngine:
         """
         return len(cls.enc.encode(message["content"]))
     
-    def __init__(self, style: str="博多弁") -> None:
+    def __init__(self, user_id: str, post_image: Callable, style: str="博多弁") -> None:
         """Initializes the chatbot engine.
         """
         style_direction = f"{style}で答えます" if style else ""
@@ -187,11 +241,26 @@ class ChatEngine:
         self.messages = Messages(self.estimate_num_tokens)
         self.messages.append({
             "role": "system",
-            "content": f"必要に応じてデータベースを検索し、ユーザーを助けるチャットボットです。{style_direction}"
+            "content": f"必要に応じてデータベースを検索たりPythonコードを作成・実行して、ユーザーを助けるチャットボットです。{style_direction}"
         })
         self.completion_tokens_prev = 0
         self.total_tokens_prev = self.messages.num_tokens[-1]
-        self.verbose = False
+        self.verbose = True
+        self.sandbox_dir = Path("./sandbox-" + user_id)
+        self.sandbox_dir.mkdir(exist_ok=True)
+        self.python_shell = InteractiveShell(ipython_dir=str(self.sandbox_dir))
+        self.python_shell.run_cell(f"""
+import os
+os.chdir('{self.sandbox_dir}')
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import japanize_matplotlib
+import sys
+sys.path.append('../')
+from utils import WSDatabase
+""")
+        self.post_image = post_image
 
     @retry(retry=retry_if_not_exception_type(InvalidRequestError), wait=wait_fixed(10))
     def _process_chat_completion(self, **kwargs) -> Dict[str, Any]:
@@ -210,6 +279,7 @@ class ChatEngine:
         self.total_tokens_prev = usage["total_tokens"]
         return message
     
+    @retry(retry=retry_if_exception_type(JSONDecodeError))
     def reply_message(self, user_message: str) -> None:
         """Replies to the user's message.
         Args:
@@ -229,7 +299,12 @@ class ChatEngine:
         
         while message.get("function_call"):
             function_name = message["function_call"]["name"]
-            arguments = json.loads(message["function_call"]["arguments"])
+            try:
+                arguments = json.loads(message["function_call"]["arguments"])
+            except JSONDecodeError as e:
+                message.rollback(1)
+                raise e
+            
             if self.verbose:
                 yield self.quotify_fn(f"function name: {function_name}")
                 yield self.quotify_fn(f"arguments: {arguments}")
@@ -237,6 +312,10 @@ class ChatEngine:
             if function_name == "ask_database":
                 with WSDatabase() as db:
                     function_response = db.ask_database(arguments["query"])
+            elif function_name == "exec_python":
+                function_response = self.exec_python(arguments["code"])
+            elif function_name == "post_image":
+                function_response = self.post_image(filename=arguments["filename"])
             else:
                 function_response = f"## Unknown function name: {function_name}"
 
@@ -257,3 +336,13 @@ class ChatEngine:
 
         yield message['content']
 
+    def exec_python(self, code: str) -> str:
+        """Executes Python code.
+        Args:
+            code (str): The Python code to execute.
+        Returns:
+            (str): The result of the execution.
+        """
+        result = self.python_shell.run_cell(code)
+        result_json = json.dumps(result.result)
+        return result_json

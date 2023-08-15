@@ -1,4 +1,5 @@
 import os
+from functools import partial
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from utils import ChatEngine
@@ -7,13 +8,22 @@ chatbot_app_token = os.environ["CHATBOT_APP_TOKEN"]
 slack_bot_token = os.environ["SLACK_BOT_TOKEN"]
 
 app = App(token=slack_bot_token)
+client = app.client
+
+def post_image(channel_id, filename):
+    response = client.files_upload_v2(
+        channels=channel_id,
+        file=filename
+    )
+    return str(response["ok"])
 
 @app.message()
 def handle(message, say):
-    if message["user"] not in chat_engine_dict.keys():
-        chat_engine_dict[message["user"]] = ChatEngine()
+    user_id = message["user"]
+    if user_id not in chat_engine_dict.keys():
+        chat_engine_dict[user_id] = ChatEngine(user_id, partial(post_image, channel_id=message["channel"]))
     
-    for reply in chat_engine_dict[message["user"]].reply_message(message['text']):
+    for reply in chat_engine_dict[user_id].reply_message(message['text']):
         say(reply)
 
 @app.command("/verbose")
@@ -21,7 +31,7 @@ def custom_command_function(ack, body, respond):
     ack()
     user_id = body["user_id"]
     if user_id not in chat_engine_dict.keys():
-        chat_engine_dict[user_id] = ChatEngine()
+        chat_engine_dict[user_id] = ChatEngine(user_id, partial(post_image, channel_id=message["channel"]))
     
     switch = body["text"].lower().strip()
     if not switch:
@@ -41,7 +51,7 @@ def custom_command_function(ack, body, respond):
     user_id = body["user_id"]
     switch = body["text"].lower().strip()
     if switch:
-        chat_engine_dict[user_id] = ChatEngine(style=switch)
+        chat_engine_dict[user_id] = ChatEngine(user_id, partial(post_image, channel_id=body["channel"]), style=switch)
         respond(f"Style: {chat_engine_dict[user_id].style}")
     elif user_id in chat_engine_dict.keys():
         respond(f"Style: {chat_engine_dict[user_id].style}")

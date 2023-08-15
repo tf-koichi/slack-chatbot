@@ -4,4 +4,7 @@ slack_bolt
 openai
 tiktoken
 pandas
+matplotlib
+japanize_matplotlib
+seaborn
 ipykernel
