@@ -23,7 +23,7 @@ class WSDatabase:
             "name": "country_code",
             "description": "国コード"
         },{
-            "name": "average life expectancy at birth",
+            "name": "average_life_expectancy_at_birth",
             "description": "平均寿命（年）"
         },{
             "name": "alcohol_consumption",
@@ -32,7 +32,7 @@ class WSDatabase:
             "name": "region",
             "description": "地域"
         },{
-            "name": "gdp per capita",
+            "name": "gdp_per_capita",
             "description": "一人当たりのGDP（ドル）"
         }
     ]
