@@ -1,10 +1,13 @@
+from email import message
 from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 import io
 import os
 import re
+import shutil
 import json
-from json.decoder import JSONDecodeError
+from json import JSONEncoder
 from pathlib import Path
+import traceback
 from IPython.core.interactiveshell import InteractiveShell
 import sqlite3
 import pandas as pd
@@ -12,6 +15,13 @@ import openai
 from openai.error import InvalidRequestError
 import tiktoken
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, wait_fixed
+
+class NumpyArrayEncoder(JSONEncoder):
+    """Custom JSONEncoder class to handle numpy arrays. cf. https://pynative.com/python-serialize-numpy-ndarray-into-json/"""
+    def default(self, obj):
+        if isinstance(obj, numpy.ndarray):
+            return obj.tolist()
+        return JSONEncoder.default(self, obj)
 
 class WSDatabase:
     data_path = Path(__file__).parent.joinpath("../data/world_stats.sqlite3")
@@ -53,31 +63,28 @@ class WSDatabase:
         schema_csv = "table: world_stats\ncolumns:\n" + schema_csv
         return schema_csv
     
-    def query(self, query):
-        """Function to query SQLite database with a provided SQL query."""
-        cursor = self.conn.cursor()
-        cursor.execute(query)
-        results = cursor.fetchall()
-        print(results)
-        cols = [col[0] for col in cursor.description]
-        results_df = pd.DataFrame(results, columns=cols)
+    def query(self, query: str) -> pd.DataFrame:
+        """Function to query SQLite database with a provided SQL query.
+        Args:
+            query (str): The SQL query to execute.
+        Returns:
+            (pd.DataFrame): The results of the query.
+        """
+        results_df = pd.read_sql_query(query, self.conn)
         return results_df
 
-    def ask_database(self, query):
-        """Function to query SQLite database with a provided SQL query."""
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(query)
-            results = cursor.fetchall()
-            cols = [col[0] for col in cursor.description]
-            results_df = pd.DataFrame(results, columns=cols)
-            text_buffer = io.StringIO()
-            results_df.to_csv(text_buffer, index=False)
-            text_buffer.seek(0)
-            results_csv = text_buffer.read()
-        except Exception as e:
-            results_csv = f"query failed with error: {e}"
-
+    def ask_database(self, query: str) -> str:
+        """Function to query SQLite database with a provided SQL query.
+        Args:
+            query (str): The SQL query to execute.
+        Returns:
+            (str): The results of the query in CSV format.
+        """
+        results_df = self.query(query)
+        text_buffer = io.StringIO()
+        results_df.to_csv(text_buffer, index=False)
+        text_buffer.seek(0)
+        results_csv = text_buffer.read()
         return results_csv
 
 class Messages:
@@ -115,15 +122,29 @@ class Messages:
             _ = self.messages.pop(1)
             _ = self.num_tokens.pop(1)
     
-    def rollback(self, n: int) -> None:
-        """Rolls back the messages by n steps."""
-        for _ in range(n):
-            _ = self.messages.pop()
-            _ = self.num_tokens.pop()
+    def rollback(self, n: Optional[int]=None) -> None:
+        """Rolls back the messages.
+        Args:
+            n (Optional[int]): The number of messages to roll back.
+                If None, roll back to the last user message.
+        """
+        if n is None:
+            while True:
+                message = self.messages.pop()
+                _ = self.num_tokens.pop()
+                if message["role"] == "user":
+                    break
+            
+        else:
+            for _ in range(n):
+                _ = self.messages.pop()
+                _ = self.num_tokens.pop()
 
 class ChatEngine:
     """Chatbot engine that uses OpenAI's API to generate responses."""
     size_pattern = re.compile(r"\-(\d+)k")
+    code_pattern = re.compile(r"code\s*=\s*([\"']+)(.*)\1", re.DOTALL|re.MULTILINE)
+    graph_pattern = re.compile(r"^!\[(?:.+)\]\((?:.*?)([^/]+\.(?:png|jpg|jpeg))\)", re.MULTILINE)
 
     @classmethod
     def get_max_num_tokens(cls) -> int:
@@ -174,7 +195,12 @@ class ChatEngine:
                 },
             }, {
                 "name": "exec_python",
-                "description": "Use this function to execute Python code. It will return the result as json.",
+                "description": """
+                    Use this function to execute Python code. It will return the result as json. The result contains the following items:
+                    - "error_in_exec":
+                    - "result": STDOUT and the value of the last expression.
+                    - "files": Files in your sandbox.
+                """,
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -185,6 +211,7 @@ class ChatEngine:
                                 Notes:
                                 - The following code has been executed before your code:
                                     ```Python
+                                    import numpy as np
                                     import pandas as pd
                                     import matplotlib.pyplot as plt
                                     import seaborn as sns
@@ -197,10 +224,13 @@ class ChatEngine:
                                     with WSDatabase() as db:
                                         result = db.query("SELECT * FROM world_stats WHERE country = 'Japan'") # result is a DataFrame of Pandas.
                                     ```
-                                - Do not return json-unserializable objects such as Pandas DataFrame.
+                                - You can use scikit-learn. You have to import it by yourself.
+                                - Do not return json-unserializable objects such as Pandas DataFrame as the last expression. Numpy ndarray is OK.
+                                - Use `/n` as a newline character, not `\r\n`.
                             """,
                         }
-                    }
+                    },
+                    "required": ["code"]
                 }
             }, {
                 "name": "post_image",
@@ -221,7 +251,9 @@ class ChatEngine:
             cls.quotify_fn = staticmethod(lambda x: x)
         else:
             cls.quotify_fn = staticmethod(quotify_fn)
-
+        
+        for sandbox in Path("./").glob("sandbox-*"):
+            shutil.rmtree(sandbox)
 
     @classmethod
     def estimate_num_tokens(cls, message: Dict) -> int:
@@ -231,7 +263,10 @@ class ChatEngine:
         Returns:
             (int): The estimated number of tokens.
         """
-        return len(cls.enc.encode(message["content"]))
+        if "content" in message.keys():
+            return len(cls.enc.encode(message["content"]))
+        else:
+            return 0
     
     def __init__(self, user_id: str, post_image: Callable, style: str="博多弁") -> None:
         """Initializes the chatbot engine.
@@ -241,17 +276,21 @@ class ChatEngine:
         self.messages = Messages(self.estimate_num_tokens)
         self.messages.append({
             "role": "system",
-            "content": f"必要に応じてデータベースを検索たりPythonコードを作成・実行して、ユーザーを助けるチャットボットです。{style_direction}"
+            "content": f"""
+                必要に応じてデータベースを検索たりPythonコードを作成・実行して、ユーザーを助けるチャットボットです。{style_direction}
+                I have a sandbox directory to execute Python code. I can post an image in the directory with markdown style, i.e. `![alt](filename)`
+            """
         })
         self.completion_tokens_prev = 0
         self.total_tokens_prev = self.messages.num_tokens[-1]
         self.verbose = True
-        self.sandbox_dir = Path("./sandbox-" + user_id)
+        self.sandbox_dir = Path("./sandbox-" + user_id).absolute()
         self.sandbox_dir.mkdir(exist_ok=True)
         self.python_shell = InteractiveShell(ipython_dir=str(self.sandbox_dir))
         self.python_shell.run_cell(f"""
 import os
 os.chdir('{self.sandbox_dir}')
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -279,7 +318,6 @@ from utils import WSDatabase
         self.total_tokens_prev = usage["total_tokens"]
         return message
     
-    @retry(retry=retry_if_exception_type(JSONDecodeError))
     def reply_message(self, user_message: str) -> None:
         """Replies to the user's message.
         Args:
@@ -289,35 +327,44 @@ from utils import WSDatabase
         """
         message = {"role": "user", "content": user_message}
         self.messages.append(message)
-        try:
-            message = self._process_chat_completion(
-                functions=self.functions,
-            )
-        except InvalidRequestError as e:
-            yield f"## Error while Chat GPT API calling with the user message: {e}"
-            return
-        
+        message = self._process_chat_completion(
+            functions=self.functions,
+        )                
         while message.get("function_call"):
             function_name = message["function_call"]["name"]
             try:
                 arguments = json.loads(message["function_call"]["arguments"])
-            except JSONDecodeError as e:
-                message.rollback(1)
-                raise e
-            
+            except json.decoder.JSONDecodeError as e:
+                if function_name == "exec_python":
+                    yield self.quotify_fn(f"## JSONDecodeError.")
+                    mo = self.code_pattern.search(message["function_call"]["arguments"])
+                    if mo:
+                        yield self.quotify_fn(f"## Interpret as `code = ` pattern.")
+                        arguments = {"code": mo.group(2)}
+                    else:
+                        yield self.quotify_fn(f"## Interpret as a code literal.")
+                        arguments = {"code": message["function_call"]["arguments"]}
+                else:
+                    yield self.quotify_fn(f"## JSONDecodeError.")
+                    self.messages.rollback()
+                    return
+        
             if self.verbose:
                 yield self.quotify_fn(f"function name: {function_name}")
-                yield self.quotify_fn(f"arguments: {arguments}")
+                yield self.quotify_fn(f"arguments:\n{arguments}")
             
-            if function_name == "ask_database":
-                with WSDatabase() as db:
-                    function_response = db.ask_database(arguments["query"])
-            elif function_name == "exec_python":
-                function_response = self.exec_python(arguments["code"])
-            elif function_name == "post_image":
-                function_response = self.post_image(filename=arguments["filename"])
-            else:
-                function_response = f"## Unknown function name: {function_name}"
+            try:
+                if function_name == "ask_database":
+                    with WSDatabase() as db:
+                        function_response = db.ask_database(arguments["query"])
+                elif function_name == "exec_python":
+                    function_response = self.exec_python(arguments["code"])
+                elif function_name == "post_image":
+                    function_response = self.post_image(filename=self.sandbox_dir / arguments["filename"])
+                else:
+                    function_response = f"## Unknown function name: {function_name}"
+            except Exception as e:
+                function_response = f"## Error while executing the function:\n{type(e).__name__}: {str(e)}"
 
             if self.verbose:
                 yield self.quotify_fn(f"function response:\n{function_response}")
@@ -327,14 +374,15 @@ from utils import WSDatabase
                         "name": function_name,
                         "content": function_response
             })
-            try:
-                message = self._process_chat_completion()
-            except InvalidRequestError as e:
-                yield f"## Error while ChatGPT API calling with the function response: {e}"
-                self.messages.rollback(3)
-                return
+            message = self._process_chat_completion()
 
-        yield message['content']
+        b = 0
+        for mo in self.graph_pattern.finditer(message["content"]):
+            yield message["content"][b: mo.start()]
+            self.post_image(filename=self.sandbox_dir / mo.group(1))
+            b = mo.end()
+
+        yield message["content"][b:]
 
     def exec_python(self, code: str) -> str:
         """Executes Python code.
@@ -344,5 +392,10 @@ from utils import WSDatabase
             (str): The result of the execution.
         """
         result = self.python_shell.run_cell(code)
-        result_json = json.dumps(result.result)
+        files_in_sandbox = [f.name for f in self.sandbox_dir.glob("*") if f.is_file()]
+        result_json = json.dumps({
+            "error_in_exec": result.error_in_exec,
+            "result": result.result,
+            "files": files_in_sandbox
+        }, cls=NumpyArrayEncoder)
         return result_json

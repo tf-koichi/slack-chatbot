@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from functools import partial
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -11,8 +12,12 @@ app = App(token=slack_bot_token)
 client = app.client
 
 def post_image(channel_id, filename):
+    print(f"post_image: {filename}")
+    if not isinstance(filename, str):
+        filename = str(filename)
+    
     response = client.files_upload_v2(
-        channels=channel_id,
+        channel=channel_id,
         file=filename
     )
     return str(response["ok"])
@@ -31,7 +36,7 @@ def custom_command_function(ack, body, respond):
     ack()
     user_id = body["user_id"]
     if user_id not in chat_engine_dict.keys():
-        chat_engine_dict[user_id] = ChatEngine(user_id, partial(post_image, channel_id=message["channel"]))
+        chat_engine_dict[user_id] = ChatEngine(user_id, partial(post_image, channel_id=body["channel"]))
     
     switch = body["text"].lower().strip()
     if not switch:

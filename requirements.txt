@@ -7,4 +7,5 @@ pandas
 matplotlib
 japanize_matplotlib
 seaborn
+scikit-learn
 ipykernel
