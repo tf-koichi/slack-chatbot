@@ -1,6 +1,6 @@
 wheel
 tenacity
-slack_bolt
+gradio
 openai
 tiktoken
 pandas

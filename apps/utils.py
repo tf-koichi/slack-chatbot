@@ -191,7 +191,7 @@ class ChatEngine:
         })
         self.completion_tokens_prev = 0
         self.total_tokens_prev = self.messages.num_tokens[-1]
-        self.verbose = False
+        self.verbose = True
 
     @retry(retry=retry_if_not_exception_type(InvalidRequestError), wait=wait_fixed(10))
     def _process_chat_completion(self, **kwargs) -> Dict[str, Any]:

@@ -1,53 +1,6 @@
-import os
-from slack_bolt import App
-from slack_bolt.adapter.socket_mode import SocketModeHandler
+import gradio as gr
 from utils import ChatEngine
 
-chatbot_app_token = os.environ["CHATBOT_APP_TOKEN"]
-slack_bot_token = os.environ["SLACK_BOT_TOKEN"]
-
-app = App(token=slack_bot_token)
-
-@app.message()
-def handle(message, say):
-    if message["user"] not in chat_engine_dict.keys():
-        chat_engine_dict[message["user"]] = ChatEngine()
-    
-    for reply in chat_engine_dict[message["user"]].reply_message(message['text']):
-        say(reply)
-
-@app.command("/verbose")
-def custom_command_function(ack, body, respond):
-    ack()
-    user_id = body["user_id"]
-    if user_id not in chat_engine_dict.keys():
-        chat_engine_dict[user_id] = ChatEngine()
-    
-    switch = body["text"].lower().strip()
-    if not switch:
-        respond("Verbose mode." if chat_engine_dict[user_id].verbose else "Quiet mode.")
-    elif switch == "on":
-        chat_engine_dict[user_id].verbose = True
-        respond("Verbose mode.")
-    elif switch == "off":
-        chat_engine_dict[user_id].verbose = False
-        respond("Quiet mode.")
-    else:
-        respond("usage: /verbose [on|off]")
-
-@app.command("/style")
-def custom_command_function(ack, body, respond):
-    ack()
-    user_id = body["user_id"]
-    switch = body["text"].lower().strip()
-    if switch:
-        chat_engine_dict[user_id] = ChatEngine(style=switch)
-        respond(f"Style: {chat_engine_dict[user_id].style}")
-    elif user_id in chat_engine_dict.keys():
-        respond(f"Style: {chat_engine_dict[user_id].style}")
-    else:
-        respond("まだ会話が始まっていません。")
- 
 model = "gpt-4-0613"
 def quotify(s: str) -> str:
     """Adds quotes to a string.
@@ -56,8 +9,44 @@ def quotify(s: str) -> str:
     Returns:
         (str) The string with quotes added.
     """
-    return "\n".join([f"> {l}" for l in s.split("\n")])
+    return "```" + s + "```"
 
 ChatEngine.setup(model, quotify_fn=quotify)
-chat_engine_dict = dict()
-SocketModeHandler(app, chatbot_app_token).start()
+chat_engine = ChatEngine()
+
+with gr.Blocks() as demo:
+    chatbot = gr.Chatbot()
+    msg = gr.Textbox()
+    with gr.Row():
+        verbose = gr.Checkbox(label="Verbose Mode", value=chat_engine.verbose)
+        style = gr.Button(value="Set Style")
+        clear = gr.ClearButton([msg, chatbot])
+
+    def respond(message, chat_history):
+        reply_combined = "\n".join(reply for reply in chat_engine.reply_message(message))
+        chat_history.append((message, reply_combined))
+        return "", chat_history
+
+    def set_verbose_mode(value):
+        chat_engine.verbose = value
+    
+    def set_style(message):
+        global chat_engine
+        message = message.strip()
+        if message:
+            print(f"Style: {message}")
+            chat_engine = ChatEngine(style=message)
+
+        return "", chat_engine.verbose
+    
+    def clear_chat_engine():
+        global chat_engine
+        chat_engine = ChatEngine()
+        return chat_engine.verbose
+        
+    msg.submit(respond, [msg, chatbot], [msg, chatbot])
+    verbose.change(set_verbose_mode, verbose)
+    style.click(set_style, [msg], [msg, verbose])
+    clear.click(clear_chat_engine, [], [verbose])
+
+demo.launch()
