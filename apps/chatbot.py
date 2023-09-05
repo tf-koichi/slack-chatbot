@@ -10,6 +10,7 @@ app = App(token=slack_bot_token)
 
 @app.message()
 def handle(message, say):
+    global chat_engine_dict
     if message["user"] not in chat_engine_dict.keys():
         chat_engine_dict[message["user"]] = ChatEngine()
     
