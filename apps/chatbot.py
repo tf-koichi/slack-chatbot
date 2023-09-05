@@ -23,11 +23,13 @@ with gr.Blocks() as demo:
         clear = gr.ClearButton([msg, chatbot])
 
     def respond(message, chat_history):
+        global chat_engine
         reply_combined = "\n".join(reply for reply in chat_engine.reply_message(message))
         chat_history.append((message, reply_combined))
         return "", chat_history
 
     def set_verbose_mode(value):
+        global chat_engine
         chat_engine.verbose = value
     
     def set_style(message):

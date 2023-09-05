@@ -191,8 +191,16 @@ class ChatEngine:
         })
         self.completion_tokens_prev = 0
         self.total_tokens_prev = self.messages.num_tokens[-1]
-        self.verbose = True
+        self._verbose = True
 
+    @property
+    def verbose(self) -> bool:
+        return self._verbose
+    
+    @verbose.setter
+    def verbose(self, value: bool) -> None:
+        self._verbose = value
+    
     @retry(retry=retry_if_not_exception_type(InvalidRequestError), wait=wait_fixed(10))
     def _process_chat_completion(self, **kwargs) -> Dict[str, Any]:
         """Processes ChatGPT API calling."""
@@ -230,7 +238,7 @@ class ChatEngine:
         while message.get("function_call"):
             function_name = message["function_call"]["name"]
             arguments = json.loads(message["function_call"]["arguments"])
-            if self.verbose:
+            if self._verbose:
                 yield self.quotify_fn(f"function name: {function_name}")
                 yield self.quotify_fn(f"arguments: {arguments}")
             
@@ -240,7 +248,7 @@ class ChatEngine:
             else:
                 function_response = f"## Unknown function name: {function_name}"
 
-            if self.verbose:
+            if self._verbose:
                 yield self.quotify_fn(f"function response:\n{function_response}")
                         
             self.messages.append({
