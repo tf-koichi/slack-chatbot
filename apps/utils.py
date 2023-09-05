@@ -283,7 +283,7 @@ class ChatEngine:
         })
         self.completion_tokens_prev = 0
         self.total_tokens_prev = self.messages.num_tokens[-1]
-        self.verbose = True
+        self._verbose = True
         self.sandbox_dir = Path("./sandbox-" + user_id).absolute()
         self.sandbox_dir.mkdir(exist_ok=True)
         self.python_shell = InteractiveShell(ipython_dir=str(self.sandbox_dir))
@@ -301,6 +301,14 @@ from utils import WSDatabase
 """)
         self.post_image = post_image
 
+    @property
+    def verbose(self) -> bool:
+        return self._verbose
+    
+    @verbose.setter
+    def verbose(self, value: bool) -> None:
+        self._verbose = value
+    
     @retry(retry=retry_if_not_exception_type(InvalidRequestError), wait=wait_fixed(10))
     def _process_chat_completion(self, **kwargs) -> Dict[str, Any]:
         """Processes ChatGPT API calling."""
@@ -349,7 +357,7 @@ from utils import WSDatabase
                     self.messages.rollback()
                     return
         
-            if self.verbose:
+            if self._verbose:
                 yield self.quotify_fn(f"function name: {function_name}")
                 yield self.quotify_fn(f"arguments:\n{arguments}")
             
@@ -366,7 +374,7 @@ from utils import WSDatabase
             except Exception as e:
                 function_response = f"## Error while executing the function:\n{type(e).__name__}: {str(e)}"
 
-            if self.verbose:
+            if self._verbose:
                 yield self.quotify_fn(f"function response:\n{function_response}")
                         
             self.messages.append({
