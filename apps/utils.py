@@ -1,4 +1,4 @@
-from typing import List, Dict, Tuple, Optional, Union, Any, Callable
+from typing import Optional, Any, Callable, Generator
 import os
 import re
 import openai
@@ -7,7 +7,7 @@ import tiktoken
 from tenacity import retry, retry_if_not_exception_type, wait_fixed
 
 class Messages:
-    def __init__(self, tokens_estimator: Callable[[Dict], int]) -> None:
+    def __init__(self, tokens_estimator: Callable[[dict], int]) -> None:
         """Initializes the Messages class.
         Args:
             tokens_estimator (Callable[[Dict], int]):
@@ -21,7 +21,7 @@ class Messages:
         self.messages = list()
         self.num_tokens = list()
     
-    def append(self, message: Dict[str, str], num_tokens: Optional[int]=None) -> None:
+    def append(self, message: dict[str, str], num_tokens: Optional[int]=None) -> None:
         """Appends a message to the messages.
         Args:
             message (Dict[str, str]): The message to append.
@@ -65,7 +65,7 @@ class ChatEngine:
             raise ValueError(f"Unknown model: {cls.model}")
 
     @classmethod
-    def setup(cls, model: str, tokens_haircut: float|Tuple[float]=0.9) -> None:
+    def setup(cls, model: str, tokens_haircut: float|tuple[float]=0.9) -> None:
         """Basic setup of the class.
         Args:
             model (str): The name of the OpenAI model to use, i.e. "gpt-3-0613" or "gpt-4-0613"
@@ -73,14 +73,16 @@ class ChatEngine:
         """
         cls.model = model
         cls.enc = tiktoken.encoding_for_model(model)
-        if isinstance(tokens_haircut, tuple):
-            cls.max_num_tokens = round(cls.get_max_num_tokens()*tokens_haircut[1] + tokens_haircut[0])
-        else:
-            cls.max_num_tokens = round(cls.get_max_num_tokens()*tokens_haircut)
+        match tokens_haircut:
+            case tuple(x) if len(x) == 2:
+                cls.max_num_tokens = round(cls.get_max_num_tokens()*x[1] + x[0])
+            case float(x):
+                cls.max_num_tokens = round(cls.get_max_num_tokens()*x)
+        
         openai.api_key = os.getenv("OPENAI_API_KEY")
 
     @classmethod
-    def estimate_num_tokens(cls, message: Dict) -> int:
+    def estimate_num_tokens(cls, message: dict) -> int:
         """Estimates the number of tokens of a message.
         Args:
             message (Dict): The message to estimate the number of tokens of.
@@ -101,7 +103,7 @@ class ChatEngine:
         self.total_tokens_prev = self.messages.num_tokens[-1]
 
     @retry(retry=retry_if_not_exception_type(InvalidRequestError), wait=wait_fixed(10))
-    def _process_chat_completion(self, **kwargs) -> Dict[str, Any]:
+    def _process_chat_completion(self, **kwargs) -> dict[str, Any]:
         """Processes ChatGPT API calling."""
         self.messages.trim(self.max_num_tokens)
         response = openai.ChatCompletion.create(
@@ -109,6 +111,7 @@ class ChatEngine:
             messages=self.messages.messages,
             **kwargs
         )
+        assert isinstance(response, dict)
         message = response["choices"][0]["message"]
         usage = response["usage"]
         self.messages.append(message, num_tokens=usage["completion_tokens"] - self.completion_tokens_prev)
@@ -117,7 +120,7 @@ class ChatEngine:
         self.total_tokens_prev = usage["total_tokens"]
         return message
     
-    def reply_message(self, user_message: str) -> None:
+    def reply_message(self, user_message: str) -> Generator:
         """Replies to the user's message.
         Args:
             user_message (str): The user's message.
