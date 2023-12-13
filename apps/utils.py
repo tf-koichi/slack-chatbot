@@ -1,4 +1,4 @@
-from typing import List, Dict, Tuple, Optional, Union, Any
+from typing import Optional, Any, Generator
 import os
 import openai
 from openai.error import InvalidRequestError
@@ -25,14 +25,15 @@ class ChatEngine:
         }]
 
     @retry(retry=retry_if_not_exception_type(InvalidRequestError), wait=wait_fixed(10))
-    def _process_chat_completion(self, **kwargs) -> Dict[str, Any]:
+    def _process_chat_completion(self, **kwargs) -> dict[str, Any]:
         """Processes ChatGPT API calling."""
         response = openai.ChatCompletion.create(model=self.model, messages=self.messages, **kwargs)
+        assert isinstance(response, dict)
         message = response["choices"][0]["message"]
         self.messages.append(message)
         return message
     
-    def reply_message(self, user_message: str) -> None:
+    def reply_message(self, user_message: str) -> Generator:
         """Replies to the user's message.
         Args:
             user_message (str): The user's message.
