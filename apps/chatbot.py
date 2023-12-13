@@ -33,7 +33,7 @@ def handle(message, say):
         say(reply)
 
 @app.command("/verbose")
-def custom_command_function(ack, body, respond):
+def verbose_function(ack, body, respond):
     ack()
     global chat_engine_dict
     user_id = body["user_id"]
@@ -53,7 +53,7 @@ def custom_command_function(ack, body, respond):
         respond("usage: /verbose [on|off]")
 
 @app.command("/style")
-def custom_command_function(ack, body, respond):
+def style_function(ack, body, respond):
     ack()
     global chat_engine_dict
     user_id = body["user_id"]
